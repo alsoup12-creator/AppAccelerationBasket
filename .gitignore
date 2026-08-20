@@ -1,0 +1,13 @@
+.vs/
+bin/
+obj/
+dist/
+release/
+*.user
+*.suo
+*.previous.exe
+*.pfx
+*.snk
+*.key
+*.pem
+
