@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Drawing;
 using System.IO;
 using System.Linq;
+using System.Management;
 using System.Net;
 using System.Net.Sockets;
 using System.Reflection;
@@ -19,9 +20,9 @@ using Microsoft.Win32;
 [assembly: AssemblyCompany("alsoup12-creator")]
 [assembly: AssemblyProduct("应用加速箩筐")]
 [assembly: AssemblyCopyright("Copyright © 2026 alsoup12-creator")]
-[assembly: AssemblyVersion("0.1.0.0")]
-[assembly: AssemblyFileVersion("0.1.0.0")]
-[assembly: AssemblyInformationalVersion("0.1.0")]
+[assembly: AssemblyVersion("0.1.1.0")]
+[assembly: AssemblyFileVersion("0.1.1.0")]
+[assembly: AssemblyInformationalVersion("0.1.1")]
 
 internal static class Program
 {
@@ -107,8 +108,20 @@ internal sealed class InstalledAppCandidate
     public bool CanAdd { get; set; }
 }
 
+[ComImport, Guid("2E941141-7F97-4756-BA1D-9DECDE894A3D"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+internal interface IApplicationActivationManager
+{
+    [PreserveSig]
+    int ActivateApplication([MarshalAs(UnmanagedType.LPWStr)] string appUserModelId,
+        [MarshalAs(UnmanagedType.LPWStr)] string arguments, uint options, out uint processId);
+}
+
+[ComImport, Guid("45BA127D-10A8-46EA-8AB7-56EA9078943C")]
+internal class ApplicationActivationManager { }
+
 internal sealed class BasketForm : Form
 {
+    private const string CodexAppUserModelId = "OpenAI.Codex_2p2nqsd0c76g0!App";
     private const string ProxyRegistryPath = @"Software\Microsoft\Windows\CurrentVersion\Internet Settings";
     private readonly string stateDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AppAccelerationBasket");
     private readonly string stateFile;
@@ -163,7 +176,7 @@ internal sealed class BasketForm : Form
 
     private void BuildInterface()
     {
-        Text = "应用加速箩筐 v0.1.0 · 应用库版";
+        Text = "应用加速箩筐 v0.1.1 · 应用库版";
         StartPosition = FormStartPosition.CenterScreen;
         ClientSize = new Size(900, 728);
         MinimumSize = new Size(820, 678);
@@ -629,6 +642,11 @@ internal sealed class BasketForm : Form
             launchButton.Text = "已在运行，不会重复启动";
             normalLaunchButton.Text = "已在运行，不会重复启动";
         }
+        else if (selected.Adapter == "Codex")
+        {
+            launchButton.Text = "专用代理启动 Codex（验证参数）";
+            normalLaunchButton.Text = "普通方式启动选中应用";
+        }
         else
         {
             launchButton.Text = selected.Adapter == "Browser" && IsTrackedLaunchRunning(selected) && GetTrackedMode(selected) == "Special"
@@ -701,7 +719,6 @@ internal sealed class BasketForm : Form
         {
             string mode = GetTrackedMode(app);
             if (mode == "Normal") return "普通方式运行中；不会重复启动";
-            if (app.Adapter == "Codex") return "专用加速运行中；不会重复启动";
             if (app.Adapter == "Browser") return "专用浏览器窗口运行中；可点击切回";
             return "专用启动中；代理效果待验证";
         }
@@ -755,7 +772,7 @@ internal sealed class BasketForm : Form
 
     private static string GetAdapterText(string adapter)
     {
-        if (adapter == "Codex") return "已适配 · Codex";
+        if (adapter == "Codex") return "可验证代理启动 · Codex";
         if (adapter == "Browser") return "已适配 · 独立浏览器窗口";
         return "通用代理 · 生效情况需实测";
     }
@@ -898,7 +915,7 @@ internal sealed class BasketForm : Form
     private static string GetInstalledCompatibility(string path)
     {
         string file = Path.GetFileName(path).ToLowerInvariant();
-        if (file == "chatgpt.exe" && path.IndexOf("OpenAI.Codex", StringComparison.OrdinalIgnoreCase) >= 0) return "已适配 · Codex";
+        if (file == "chatgpt.exe" && path.IndexOf("OpenAI.Codex", StringComparison.OrdinalIgnoreCase) >= 0) return "可验证代理启动 · Codex";
         if (new string[] { "chrome.exe", "msedge.exe", "brave.exe", "opera.exe", "vivaldi.exe" }.Contains(file)) return "已适配 · 独立浏览器窗口";
         if (file.Contains("launcher") || file.Contains("bootstrap")) return "通用尝试 · 启动器可能另开进程";
         return "通用尝试 · 是否采用代理需实测";
@@ -1078,15 +1095,15 @@ internal sealed class BasketForm : Form
         if (launchInProgress) return;
         BasketApp app = GetSelectedApp();
         if (app == null) return;
+        if (app.Adapter != "Browser" && IsAppRunning(app))
+        {
+            MessageBox.Show(this, app.Name + " 已经在运行，箩筐不会再次发起启动。\n\n如需切换线路，请先正常退出该应用，等状态变为“未运行”后再启动。", "已阻止重复启动", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
         try { ResolveAppExecutable(app, true); }
         catch (Exception error)
         {
             MessageBox.Show(this, error.Message, "无法定位当前程序", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            return;
-        }
-        if (app.Adapter != "Browser" && IsAppRunning(app))
-        {
-            MessageBox.Show(this, app.Name + " 已经在运行，箩筐不会再次发起启动。\n\n如需切换线路，请先正常退出该应用，等状态变为“未运行”后再启动。", "已阻止重复启动", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
         if (app.Adapter == "Browser" && IsTrackedLaunchRunning(app) && GetTrackedMode(app) == "Special" && TryActivateTrackedProcess(app))
@@ -1103,14 +1120,22 @@ internal sealed class BasketForm : Form
             if (!TestSelectedProxy(false)) return;
             EnsureOutsideAppsDirect();
             ProxyProfile proxy = GetProxy(true);
-            LaunchApp(app, proxy);
+            if (app.Adapter == "Codex") LaunchCodexWithProxy(app, proxy);
+            else LaunchApp(app, proxy);
             launchedModes[app.Id] = "Special";
             feedback.ForeColor = Color.FromArgb(25, 135, 84);
-            feedback.Text = app.Name + " 已按专用方式启动；通用应用是否真正采用代理仍需实测。";
+            feedback.Text = app.Adapter == "Codex"
+                ? "Codex 已收到代理启动参数；登录与请求是否走该线路仍需验证。"
+                : app.Name + " 已按专用方式启动；通用应用是否真正采用代理仍需实测。";
         }
         catch (Exception error)
         {
             try { RestoreSystemProxy(false); } catch { }
+            if (app.Adapter == "Codex")
+            {
+                launchedProcessIds.Remove(app.Id);
+                launchedModes.Remove(app.Id);
+            }
             MessageBox.Show(this, error.Message, "启动失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
         finally
@@ -1125,15 +1150,15 @@ internal sealed class BasketForm : Form
         if (launchInProgress) return;
         BasketApp app = GetSelectedApp();
         if (app == null) return;
+        if (app.Adapter != "Browser" && IsAppRunning(app))
+        {
+            MessageBox.Show(this, app.Name + " 已经在运行，箩筐不会再次发起启动。\n\n如需切换为普通方式，请先正常退出该应用，等状态变为“未运行”后再启动。", "已阻止重复启动", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
         try { ResolveAppExecutable(app, true); }
         catch (Exception error)
         {
             MessageBox.Show(this, error.Message, "无法定位当前程序", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            return;
-        }
-        if (app.Adapter != "Browser" && IsAppRunning(app))
-        {
-            MessageBox.Show(this, app.Name + " 已经在运行，箩筐不会再次发起启动。\n\n如需切换为普通方式，请先正常退出该应用，等状态变为“未运行”后再启动。", "已阻止重复启动", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
 
@@ -1142,8 +1167,7 @@ internal sealed class BasketForm : Form
         try
         {
             if (File.Exists(backupFile)) RestoreSystemProxy(false);
-            Process process = LaunchAppNormally(app);
-            launchedProcessIds[app.Id] = process.Id;
+            launchedProcessIds[app.Id] = LaunchAppNormally(app);
             launchedModes[app.Id] = "Normal";
             feedback.ForeColor = Color.FromArgb(39, 48, 61);
             feedback.Text = app.Name + " 已按普通方式启动，将跟随 Windows 和 VPN 当前网络设置。";
@@ -1159,10 +1183,11 @@ internal sealed class BasketForm : Form
         }
     }
 
-    private Process LaunchAppNormally(BasketApp app)
+    private int LaunchAppNormally(BasketApp app)
     {
         string executable = ResolveAppExecutable(app, true);
         if (!File.Exists(executable)) throw new FileNotFoundException("程序文件不存在", executable);
+        if (app.Adapter == "Codex") return ActivateCodex(app.Arguments ?? "");
         ProcessStartInfo info = new ProcessStartInfo();
         info.FileName = executable;
         info.Arguments = app.Arguments ?? "";
@@ -1170,7 +1195,7 @@ internal sealed class BasketForm : Form
         info.UseShellExecute = true;
         Process process = Process.Start(info);
         if (process == null) throw new InvalidOperationException("系统没有返回启动进程。");
-        return process;
+        return process.Id;
     }
 
     private void LaunchApp(BasketApp app, ProxyProfile profile)
@@ -1181,13 +1206,7 @@ internal sealed class BasketForm : Form
         string environmentProxy = (profile.Type == "SOCKS5" ? "socks5h://" : "http://") + profile.Host + ":" + profile.Port;
         List<string> args = new List<string>();
         if (!String.IsNullOrWhiteSpace(app.Arguments)) args.Add(app.Arguments);
-        if (app.Adapter == "Codex")
-        {
-            args.Add("--proxy-server=" + QuoteIfNeeded(chromiumProxy));
-            args.Add("--proxy-bypass-list=localhost;127.0.0.1;[::1]");
-            args.Add("--disable-quic");
-        }
-        else if (app.Adapter == "Browser")
+        if (app.Adapter == "Browser")
         {
             string profileDirectory = Path.Combine(browserProfilesDirectory, app.Id);
             Directory.CreateDirectory(profileDirectory);
@@ -1208,6 +1227,120 @@ internal sealed class BasketForm : Form
         Process process = Process.Start(info);
         if (process == null) throw new InvalidOperationException("系统没有返回启动进程。");
         launchedProcessIds[app.Id] = process.Id;
+    }
+
+    private void LaunchCodexWithProxy(BasketApp app, ProxyProfile profile)
+    {
+        string proxy = (profile.Type == "SOCKS5" ? "socks5://" : "http://") + profile.Host + ":" + profile.Port;
+        string environmentProxy = (profile.Type == "SOCKS5" ? "socks5h://" : "http://") + profile.Host + ":" + profile.Port;
+        List<string> arguments = new List<string>();
+        if (!String.IsNullOrWhiteSpace(app.Arguments)) arguments.Add(app.Arguments);
+        arguments.Add("--proxy-server=" + QuoteIfNeeded(proxy));
+        arguments.Add("--proxy-bypass-list=localhost;127.0.0.1;[::1]");
+        arguments.Add("--disable-quic");
+        string startedExecutable = "";
+        for (int attempt = 0; attempt < 3; attempt++)
+        {
+            string executable = ResolveAppExecutable(app, true);
+            ProcessStartInfo info = new ProcessStartInfo();
+            info.FileName = executable;
+            info.Arguments = String.Join(" ", arguments.ToArray());
+            info.WorkingDirectory = Path.GetDirectoryName(executable);
+            info.UseShellExecute = false;
+            foreach (string key in new string[] { "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy" })
+                info.EnvironmentVariables[key] = environmentProxy;
+            info.EnvironmentVariables["NO_PROXY"] = "localhost,127.0.0.1,::1";
+            info.EnvironmentVariables["no_proxy"] = "localhost,127.0.0.1,::1";
+            try
+            {
+                using (Process process = Process.Start(info))
+                {
+                    if (process == null) throw new InvalidOperationException("Windows 没有返回 Codex 启动进程。");
+                }
+                startedExecutable = executable;
+                break;
+            }
+            catch (System.ComponentModel.Win32Exception error)
+            {
+                if (error.NativeErrorCode != 5 && error.NativeErrorCode != 2 && error.NativeErrorCode != 3) throw;
+                if (attempt == 2)
+                    throw new InvalidOperationException("Windows 暂时无法直接启动 Codex（错误码 " + error.NativeErrorCode + "）；箩筐已重新识别安装版本并重试。请等 Codex 更新完成后再试。", error);
+                feedback.Text = "Codex 安装包暂时无法启动，正在重新识别并重试…";
+                Application.DoEvents();
+                Thread.Sleep(1000);
+            }
+        }
+
+        // Electron can forward a second launch to an existing instance. Require
+        // the main process to contain our switch before recording a special launch.
+        DateTime deadline = DateTime.UtcNow.AddSeconds(8);
+        bool foundMainProcess = false;
+        do
+        {
+            int mainProcessId;
+            string commandLine = FindCodexMainCommandLine(startedExecutable, out mainProcessId);
+            if (!String.IsNullOrEmpty(commandLine))
+            {
+                foundMainProcess = true;
+                if (commandLine.IndexOf("--proxy-server=" + proxy, StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    launchedProcessIds[app.Id] = mainProcessId;
+                    return;
+                }
+            }
+            Application.DoEvents();
+            Thread.Sleep(200);
+        } while (DateTime.UtcNow < deadline);
+        throw new InvalidOperationException(foundMainProcess
+            ? "Codex 已打开，但没有收到所选代理启动参数。箩筐未把这次启动标记为加速；请正常退出 Codex 后重试。"
+            : "Codex 启动后未能读取主进程的启动参数，无法确认代理是否生效。箩筐未把这次启动标记为加速。");
+    }
+
+    private static string FindCodexMainCommandLine(string expectedExecutable, out int processId)
+    {
+        processId = 0;
+        using (ManagementObjectSearcher searcher = new ManagementObjectSearcher(
+            "SELECT ProcessId, ExecutablePath, CommandLine FROM Win32_Process WHERE Name = 'ChatGPT.exe'"))
+        using (ManagementObjectCollection processes = searcher.Get())
+        {
+            foreach (ManagementObject process in processes)
+            {
+                using (process)
+                {
+                    string path = Convert.ToString(process["ExecutablePath"]);
+                    string commandLine = Convert.ToString(process["CommandLine"]);
+                    if (String.Equals(path, expectedExecutable, StringComparison.OrdinalIgnoreCase) &&
+                        commandLine.IndexOf("--type=", StringComparison.OrdinalIgnoreCase) < 0)
+                    {
+                        processId = Convert.ToInt32(process["ProcessId"]);
+                        return commandLine;
+                    }
+                }
+            }
+        }
+        return "";
+    }
+
+    private static int ActivateCodex(string arguments)
+    {
+        IApplicationActivationManager manager = null;
+        try
+        {
+            manager = (IApplicationActivationManager)new ApplicationActivationManager();
+            uint processId;
+            int result = manager.ActivateApplication(CodexAppUserModelId, arguments, 0, out processId);
+            if (result < 0) Marshal.ThrowExceptionForHR(result);
+            if (processId == 0) throw new InvalidOperationException("Windows 没有返回 Codex 的进程编号。");
+            return checked((int)processId);
+        }
+        catch (COMException error)
+        {
+            throw new InvalidOperationException("Windows 应用入口无法启动 Codex（错误码 0x" + error.ErrorCode.ToString("X8") + "）。", error);
+        }
+        finally
+        {
+            if (manager != null) Marshal.FinalReleaseComObject(manager);
+        }
     }
 
     private bool TestSelectedProxy(bool showMessage)
@@ -1430,6 +1563,19 @@ internal sealed class BasketForm : Form
         }
     }
 
+    private static string FindCodexExecutableWithRetry()
+    {
+        Exception lastError = null;
+        for (int attempt = 0; attempt < 4; attempt++)
+        {
+            try { return FindCodexExecutable(); }
+            catch (FileNotFoundException error) { lastError = error; }
+            catch (InvalidOperationException error) { lastError = error; }
+            if (attempt < 3) Thread.Sleep(800);
+        }
+        throw new InvalidOperationException("Codex 安装位置暂时不可用；箩筐已重新检查。请等应用更新完成后再试。", lastError);
+    }
+
     private string ResolveAppExecutable(BasketApp app, bool refreshCodex)
     {
         if (app.Adapter != "Codex") return app.Path;
@@ -1437,7 +1583,7 @@ internal sealed class BasketForm : Form
             return currentCodexExecutable;
         try
         {
-            string resolved = FindCodexExecutable();
+            string resolved = refreshCodex ? FindCodexExecutableWithRetry() : FindCodexExecutable();
             currentCodexExecutable = resolved;
             if (!String.Equals(app.Path, resolved, StringComparison.OrdinalIgnoreCase))
             {
@@ -1456,6 +1602,21 @@ internal sealed class BasketForm : Form
 
     private bool IsAppRunning(BasketApp app)
     {
+        if (app.Adapter == "Codex")
+        {
+            foreach (Process process in Process.GetProcessesByName("ChatGPT"))
+            {
+                try
+                {
+                    string path = process.MainModule.FileName;
+                    if (path.IndexOf("\\OpenAI.Codex_", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                        path.EndsWith("\\app\\ChatGPT.exe", StringComparison.OrdinalIgnoreCase)) return true;
+                }
+                catch { }
+                finally { process.Dispose(); }
+            }
+            return false;
+        }
         return IsPathRunning(ResolveAppExecutable(app, false));
     }
 

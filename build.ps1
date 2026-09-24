@@ -1,4 +1,4 @@
-$ErrorActionPreference = "Stop"
+﻿$ErrorActionPreference = "Stop"
 
 $projectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $source = Join-Path $projectRoot "src\AppAccelerationBasket.cs"
@@ -21,6 +21,7 @@ New-Item -ItemType Directory -Path $outputDirectory -Force | Out-Null
     /reference:System.dll `
     /reference:System.Core.dll `
     /reference:System.Drawing.dll `
+    /reference:System.Management.dll `
     /reference:System.Windows.Forms.dll `
     /reference:System.Web.Extensions.dll `
     /reference:Microsoft.CSharp.dll `
