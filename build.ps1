@@ -17,7 +17,7 @@ if (-not $compiler) {
 
 New-Item -ItemType Directory -Path $outputDirectory -Force | Out-Null
 
-& $compiler /nologo /target:winexe /warn:4 /optimize+ /out:$output `
+& $compiler /nologo /target:winexe /platform:x64 /warn:4 /optimize+ /out:$output `
     /reference:System.dll `
     /reference:System.Core.dll `
     /reference:System.Drawing.dll `
@@ -25,7 +25,7 @@ New-Item -ItemType Directory -Path $outputDirectory -Force | Out-Null
     /reference:System.Windows.Forms.dll `
     /reference:System.Web.Extensions.dll `
     /reference:Microsoft.CSharp.dll `
-    $source
+    $source (Join-Path $projectRoot "src\PackagedProxy.cs") (Join-Path $projectRoot "src\SystemProxySession.cs")
 
 if ($LASTEXITCODE -ne 0) {
     throw "编译失败，退出代码：$LASTEXITCODE"
