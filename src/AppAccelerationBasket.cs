@@ -20,9 +20,9 @@ using Microsoft.Win32;
 [assembly: AssemblyCompany("alsoup12-creator")]
 [assembly: AssemblyProduct("应用加速箩筐")]
 [assembly: AssemblyCopyright("Copyright © 2026 alsoup12-creator")]
-[assembly: AssemblyVersion("0.1.2.0")]
-[assembly: AssemblyFileVersion("0.1.2.0")]
-[assembly: AssemblyInformationalVersion("0.1.2")]
+[assembly: AssemblyVersion("0.1.3.0")]
+[assembly: AssemblyFileVersion("0.1.3.0")]
+[assembly: AssemblyInformationalVersion("0.1.3")]
 
 internal static class Program
 {
@@ -130,7 +130,8 @@ internal sealed class BasketForm : Form
 {
     private const string CodexAppUserModelId = "OpenAI.Codex_2p2nqsd0c76g0!App";
     private const string ProxyRegistryPath = @"Software\Microsoft\Windows\CurrentVersion\Internet Settings";
-    private readonly string stateDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AppAccelerationBasket");
+    private readonly string stateDirectory;
+    private readonly Action<string, string> eventLogger;
     private readonly string stateFile;
     private readonly string backupFile;
     private readonly string browserProfilesDirectory;
@@ -149,6 +150,7 @@ internal sealed class BasketForm : Form
     private readonly Button launchButton = new Button();
     private readonly Button normalLaunchButton = new Button();
     private readonly Button restoreButton = new Button();
+    private readonly Button resumeButton = new Button();
     private readonly Button openVpnButton = new Button();
     private readonly System.Windows.Forms.Timer refreshTimer = new System.Windows.Forms.Timer();
     private readonly List<BasketApp> apps = new List<BasketApp>();
@@ -158,6 +160,7 @@ internal sealed class BasketForm : Form
     private string currentCodexExecutable = "";
     private readonly SystemProxySession proxySession;
     private bool launchInProgress;
+    private bool networkSwitchInProgress;
     private bool launchReceiptPending;
     private bool loading;
 
@@ -170,22 +173,27 @@ internal sealed class BasketForm : Form
     [DllImport("user32.dll")]
     private static extern bool ShowWindow(IntPtr window, int command);
 
-    public BasketForm()
+    public BasketForm() : this(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AppAccelerationBasket"), null, null) { }
+
+    internal BasketForm(string directory, SystemProxySession session, Action<string, string> logger)
     {
+        stateDirectory = directory;
+        eventLogger = logger;
         stateFile = Path.Combine(stateDirectory, "basket.json");
         backupFile = Path.Combine(stateDirectory, "windows-proxy-backup.json");
         browserProfilesDirectory = Path.Combine(stateDirectory, "browser-profiles");
-        LogEvent("session.start", "version=0.1.2; proxyUnchanged=true");
-        proxySession = new SystemProxySession(Path.Combine(stateDirectory, "proxy-session-dev8.json"), WinInetProxy.Read, WinInetProxy.WriteFlags, LogEvent);
+        LogEvent("session.start", "version=0.1.3; proxyUnchanged=true");
+        proxySession = session ?? new SystemProxySession(Path.Combine(stateDirectory, "proxy-session-dev8.json"), WinInetProxy.Read, WinInetProxy.WriteFlags, LogEvent);
         try { proxySession.Restore("startup-recovery"); }
         catch (Exception e) { LogEvent("proxy.recovery_error", e.GetType().Name); MessageBox.Show(e.Message, "网络恢复提示"); }
         BuildInterface();
         FormClosing += delegate(object sender, FormClosingEventArgs e) {
-            if (launchInProgress) { e.Cancel = true; return; }
+            if (launchInProgress || networkSwitchInProgress) { e.Cancel = true; return; }
             try { proxySession.Restore("window-close"); }
             catch (Exception error) { LogEvent("proxy.restore_error", error.GetType().Name); MessageBox.Show(this, error.Message, "网络恢复失败"); e.Cancel = true; }
         };
         FormClosed += delegate { LogEvent("session.close", "restoreHandled=true"); };
+        Disposed += delegate { refreshTimer.Dispose(); icons.Dispose(); };
         LoadState();
         RefreshEverything();
         refreshTimer.Interval = 2500;
@@ -195,10 +203,10 @@ internal sealed class BasketForm : Form
 
     private void BuildInterface()
     {
-        Text = "应用加速箩筐 v0.1.2 · 一键专用网络";
+        Text = "应用加速箩筐 v0.1.3 · 一键专用网络";
         StartPosition = FormStartPosition.CenterScreen;
         ClientSize = new Size(900, 728);
-        MinimumSize = new Size(820, 678);
+        MinimumSize = SizeFromClientSize(ClientSize);
         BackColor = Color.FromArgb(246, 248, 251);
         Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Regular, GraphicsUnit.Point);
 
@@ -361,7 +369,7 @@ internal sealed class BasketForm : Form
 
         launchButton.Text = "专用加速启动选中应用";
         launchButton.Location = new Point(28, 646);
-        launchButton.Size = new Size(310, 48);
+        launchButton.Size = new Size(260, 48);
         launchButton.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
         launchButton.FlatStyle = FlatStyle.Flat;
         launchButton.FlatAppearance.BorderSize = 0;
@@ -373,21 +381,29 @@ internal sealed class BasketForm : Form
         Controls.Add(launchButton);
 
         normalLaunchButton.Text = "普通方式启动选中应用";
-        normalLaunchButton.Location = new Point(348, 646);
-        normalLaunchButton.Size = new Size(250, 48);
+        normalLaunchButton.Location = new Point(298, 646);
+        normalLaunchButton.Size = new Size(220, 48);
         normalLaunchButton.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
         StyleLightButton(normalLaunchButton);
         normalLaunchButton.Font = new Font("Microsoft YaHei UI", 9.5F, FontStyle.Bold, GraphicsUnit.Point);
         normalLaunchButton.Click += delegate { LaunchNormally(); };
         Controls.Add(normalLaunchButton);
 
-        restoreButton.Text = "仅恢复 Windows 系统代理";
-        restoreButton.Location = new Point(608, 646);
-        restoreButton.Size = new Size(264, 48);
+        restoreButton.Text = "恢复系统代理";
+        restoreButton.Location = new Point(528, 646);
+        restoreButton.Size = new Size(164, 48);
         restoreButton.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
         StyleLightButton(restoreButton);
-        restoreButton.Click += delegate { try { if (proxySession.Active) { proxySession.Restore("user-click"); RefreshEverything(); } else RestoreSystemProxy(true); } catch (Exception error) { LogEvent("proxy.restore_error", error.GetType().Name); MessageBox.Show(this, error.Message, "网络恢复失败"); } };
+        restoreButton.Click += delegate { RestoreNetwork(); };
         Controls.Add(restoreButton);
+
+        resumeButton.Text = "恢复专用加速";
+        resumeButton.Location = new Point(702, 646);
+        resumeButton.Size = new Size(170, 48);
+        resumeButton.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
+        StyleLightButton(resumeButton);
+        resumeButton.Click += delegate { ResumeDedicatedNetwork(); };
+        Controls.Add(resumeButton);
 
         feedback.Location = new Point(30, 618);
         feedback.Size = new Size(840, 24);
@@ -635,17 +651,26 @@ internal sealed class BasketForm : Form
     {
         ProxyProfile proxy = null;
         try { proxy = GetProxy(true); } catch { }
-        int enabled = ReadProxyEnabled();
         bool ownBackup = File.Exists(backupFile);
-        bool codexBackup = File.Exists(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CodexVeeeLauncher", "windows-proxy-backup.json"));
-        if (ownBackup && enabled == 0)
-            SetValue(systemValue, "系统代理关闭（有旧备份）", Color.FromArgb(25, 135, 84));
-        else if (enabled == 1)
-            SetValue(systemValue, "系统代理已开启", Color.FromArgb(29, 111, 237));
-        else if (codexBackup)
-            SetValue(systemValue, "系统代理已关闭（Codex 工具管理）", Color.FromArgb(184, 116, 17));
-        else
-            SetValue(systemValue, "系统手动代理关闭", Color.FromArgb(105, 114, 126));
+        bool dedicatedNetwork = false;
+        bool networkKnown = false;
+        try
+        {
+            ProxySnapshot network = proxySession.ReadCurrent();
+            dedicatedNetwork = proxySession.IsDedicated(network);
+            networkKnown = true;
+            if (dedicatedNetwork)
+                SetValue(systemValue, "专用加速模式（系统直连）", Color.FromArgb(25, 135, 84));
+            else if (proxySession.Active)
+                SetValue(systemValue, "系统设置已变化（保留恢复记录）", Color.FromArgb(184, 116, 17));
+            else if ((network.Flags & 6) != 0)
+                SetValue(systemValue, "系统代理已开启", Color.FromArgb(29, 111, 237));
+            else if ((network.Flags & 8) != 0)
+                SetValue(systemValue, "系统自动检测代理", Color.FromArgb(105, 114, 126));
+            else
+                SetValue(systemValue, ownBackup ? "系统直连（有旧备份）" : "系统直连", Color.FromArgb(105, 114, 126));
+        }
+        catch { SetValue(systemValue, "无法确认系统网络，请查看恢复记录", Color.FromArgb(190, 56, 45)); }
 
         if (proxy == null)
             SetValue(proxyValue, "代理配置无效", Color.FromArgb(190, 56, 45));
@@ -683,10 +708,13 @@ internal sealed class BasketForm : Form
             normalLaunchButton.Text = "普通方式启动选中应用";
         }
 
-        launchButton.Enabled = !launchInProgress && !launchReceiptPending && proxy != null && selected != null && !selectedRunning;
+        bool networkBusy = launchInProgress || networkSwitchInProgress;
+        launchButton.Enabled = !networkBusy && !launchReceiptPending && proxy != null && selected != null && !selectedRunning;
         launchButton.BackColor = launchButton.Enabled ? Color.FromArgb(29, 111, 237) : Color.FromArgb(169, 183, 201);
-        normalLaunchButton.Enabled = !launchInProgress && !launchReceiptPending && selected != null && !selectedRunning;
-        restoreButton.Enabled = ownBackup || proxySession.Active;
+        normalLaunchButton.Enabled = !networkBusy && !launchReceiptPending && selected != null && !selectedRunning;
+        restoreButton.Enabled = !networkBusy && (ownBackup || proxySession.Active || dedicatedNetwork);
+        resumeButton.Enabled = !networkBusy && networkKnown && proxy != null && !dedicatedNetwork;
+        resumeButton.Text = networkSwitchInProgress ? "正在切换，请稍候…" : "恢复专用加速";
         RefreshVpnButton();
         UpdateListStatuses();
     }
@@ -1122,7 +1150,7 @@ internal sealed class BasketForm : Form
 
     private void LaunchBasket()
     {
-        if (launchInProgress || launchReceiptPending) return;
+        if (launchInProgress || networkSwitchInProgress || launchReceiptPending) return;
         BasketApp app = GetSelectedApp();
         if (app == null) return;
         if (app.Adapter != "Browser" && IsAppRunning(app))
@@ -1193,7 +1221,7 @@ internal sealed class BasketForm : Form
 
     private void LaunchNormally()
     {
-        if (launchInProgress || launchReceiptPending) return;
+        if (launchInProgress || networkSwitchInProgress || launchReceiptPending) return;
         BasketApp app = GetSelectedApp();
         if (app == null) return;
         if (app.Adapter != "Browser" && IsAppRunning(app))
@@ -1377,6 +1405,63 @@ internal sealed class BasketForm : Form
         byte[] data = new byte[count]; int offset = 0;
         while (offset < count) { int read = stream.Read(data, offset, count - offset); if (read <= 0) throw new EndOfStreamException("代理提前断开。"); offset += read; }
         return data;
+    }
+
+    private void ResumeDedicatedNetwork()
+    {
+        if (launchInProgress || networkSwitchInProgress) return;
+        networkSwitchInProgress = true;
+        RefreshEverything();
+        try
+        {
+            if (!TestSelectedProxy(false))
+            {
+                feedback.Text = "代理线路暂不可用，系统网络保持原样；请先启动或检查 VPN。";
+                return;
+            }
+            proxySession.Enter();
+            LogEvent("network.resume", "dedicated=true; noAppLaunch=true");
+            feedback.ForeColor = Color.FromArgb(25, 135, 84);
+            feedback.Text = "已恢复专用加速；系统网络直连，已专用启动的应用保持原线路。普通启动的应用需退出后专用启动。";
+        }
+        catch (Exception error)
+        {
+            LogEvent("proxy.resume_error", error.GetType().Name);
+            feedback.ForeColor = Color.FromArgb(190, 56, 45);
+            feedback.Text = "切换未完成，请检查系统网络和恢复记录。";
+            MessageBox.Show(this, error.Message, "网络切换失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+        finally { networkSwitchInProgress = false; RefreshEverything(); }
+    }
+
+    private void RestoreNetwork()
+    {
+        if (launchInProgress || networkSwitchInProgress) return;
+        networkSwitchInProgress = true;
+        RefreshEverything();
+        try
+        {
+            ProxyRestoreResult result = proxySession.Restore("user-click");
+            if (result == ProxyRestoreResult.NoSession && File.Exists(backupFile))
+            {
+                RestoreSystemProxy(false);
+                result = ProxyRestoreResult.Restored;
+            }
+            feedback.ForeColor = Color.FromArgb(39, 48, 61);
+            feedback.Text = result == ProxyRestoreResult.ExternalChangePreserved
+                ? "检测到外部修改，已保留当前系统设置；需要时可点击“恢复专用加速”。"
+                : result == ProxyRestoreResult.NoSession
+                    ? "系统原本就是直连，无需恢复代理设置；已退出专用加速模式。"
+                    : "已恢复此前的系统代理设置；完成登录后可点击“恢复专用加速”，无需重启已专用启动的应用。";
+        }
+        catch (Exception error)
+        {
+            LogEvent("proxy.restore_error", error.GetType().Name);
+            feedback.ForeColor = Color.FromArgb(190, 56, 45);
+            feedback.Text = "恢复未完成，恢复记录已保留，请查看日志。";
+            MessageBox.Show(this, error.Message, "网络恢复失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+        finally { networkSwitchInProgress = false; RefreshEverything(); }
     }
 
     private void RestoreSystemProxy(bool showMessage)
@@ -1592,6 +1677,7 @@ internal sealed class BasketForm : Form
 
     private void LogEvent(string action, string detail)
     {
+        if (eventLogger != null) { eventLogger(action, detail); return; }
         PackagedProxy.Log("ui", action, detail + "; proxyEnabled=" + ReadProxyEnabled());
     }
     private static int ReadProxyEnabled()

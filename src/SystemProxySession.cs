@@ -10,25 +10,30 @@ internal sealed class ProxySnapshot {
  public bool Same(ProxySnapshot other){return other!=null&&Flags==other.Flags&&Server==other.Server&&Bypass==other.Bypass&&Script==other.Script;}
 }
 internal sealed class ProxyLease { public ProxySnapshot Before; public ProxySnapshot Applied; }
+internal enum ProxyRestoreResult { NoSession, Restored, AlreadyRestored, ExternalChangePreserved }
 internal sealed class SystemProxySession {
  readonly string file; readonly Func<ProxySnapshot> read; readonly Action<int> write; readonly Action<string,string> log;
+ bool directRequested;
  public bool Active {get{return File.Exists(file);}}
  public SystemProxySession(string file,Func<ProxySnapshot> read,Action<int> write,Action<string,string> log){this.file=file;this.read=read;this.write=write;this.log=log;}
+ public ProxySnapshot ReadCurrent(){return read();}
+ public bool IsDedicated(ProxySnapshot current){return current.Flags==1&&(Active?current.Same(Load().Applied):directRequested);}
  public bool Enter() {
   var current=read();log("proxy.before","flags="+current.Flags);
-  if(Active){var saved=Load();if(current.Same(saved.Applied))return false;Restore("external-change");current=read();}
-  if(current.Flags==1){log("proxy.unchanged","alreadyDirect=true");return false;}
+  if(Active){var saved=Load();if(current.Same(saved.Applied)){directRequested=true;return false;}Restore("external-change");current=read();}
+  if(current.Flags==1){directRequested=true;log("proxy.unchanged","alreadyDirect=true");return false;}
   var lease=new ProxyLease{Before=current,Applied=current.Direct()};Directory.CreateDirectory(Path.GetDirectoryName(file));
   string temp=file+".tmp";File.WriteAllText(temp,new JavaScriptSerializer().Serialize(lease));File.Move(temp,file);
-  try{write(1);var after=read();if(!after.Same(lease.Applied))throw new InvalidOperationException("网络设置已被其他程序改变，已停止启动。请查看日志。");log("proxy.enter","beforeFlags="+current.Flags+" afterFlags="+after.Flags);return true;}
+  try{write(1);var after=read();if(!after.Same(lease.Applied))throw new InvalidOperationException("网络设置已被其他程序改变，已停止切换。请查看日志。");directRequested=true;log("proxy.enter","beforeFlags="+current.Flags+" afterFlags="+after.Flags);return true;}
   catch{try{Restore("enter-failed");}catch(Exception e){log("proxy.rollback_error",e.GetType().Name+" "+e.HResult.ToString("X8"));}throw;}
  }
  ProxyLease Load(){var lease=new JavaScriptSerializer().Deserialize<ProxyLease>(File.ReadAllText(file));if(lease==null||lease.Before==null||lease.Applied==null)throw new InvalidOperationException("网络恢复记录无效；未覆盖当前设置。");return lease;}
- public void Restore(string reason) {
-  if(!Active)return;var lease=Load();var current=read();
-  if(current.Same(lease.Before)){File.Delete(file);log("proxy.restore","alreadyRestored=true; reason="+reason);return;}
-  if(!current.Same(lease.Applied)){File.Delete(file);log("proxy.restore_skipped","externalChange=true; currentFlags="+current.Flags+"; reason="+reason);return;}
-  write(lease.Before.Flags);if(!read().Same(lease.Before))throw new InvalidOperationException("恢复网络设置后核对不一致；恢复记录已保留。");File.Delete(file);log("proxy.restore","flags="+lease.Before.Flags+"; reason="+reason);
+ public ProxyRestoreResult Restore(string reason) {
+  directRequested=false;
+  if(!Active)return ProxyRestoreResult.NoSession;var lease=Load();var current=read();
+  if(current.Same(lease.Before)){File.Delete(file);log("proxy.restore","alreadyRestored=true; reason="+reason);return ProxyRestoreResult.AlreadyRestored;}
+  if(!current.Same(lease.Applied)){File.Delete(file);log("proxy.restore_skipped","externalChange=true; currentFlags="+current.Flags+"; reason="+reason);return ProxyRestoreResult.ExternalChangePreserved;}
+  write(lease.Before.Flags);if(!read().Same(lease.Before))throw new InvalidOperationException("恢复网络设置后核对不一致；恢复记录已保留。");File.Delete(file);log("proxy.restore","flags="+lease.Before.Flags+"; reason="+reason);return ProxyRestoreResult.Restored;
  }
 }
 internal static class WinInetProxy {
