@@ -38,6 +38,14 @@ class BasketUiTests
         TcpListener listener = null;
         try
         {
+            string discordRoot = Path.Combine(directory, "discord-fixture");
+            foreach (string v in new[] { "1.0.9", "1.0.10", "1.0.11" })
+            {
+                string folder = Path.Combine(discordRoot, "app-" + v);
+                Directory.CreateDirectory(folder);
+                if (v != "1.0.11") File.WriteAllText(Path.Combine(folder, "Discord.exe"), "fixture");
+            }
+            Check(BasketForm.FindDiscordExecutableIn(discordRoot) == Path.Combine(discordRoot, "app-1.0.10", "Discord.exe"), "Discord version discovery must select the newest installed executable numerically");
             var realBefore = WinInetProxy.Read();
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);

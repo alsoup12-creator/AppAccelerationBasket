@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
@@ -203,7 +203,7 @@ internal sealed class BasketForm : Form
 
     private void BuildInterface()
     {
-        Text = "应用加速箩筐 v0.1.3 · 一键专用网络";
+        Text = "应用加速箩筐 v0.1.4 · 一键专用网络";
         StartPosition = FormStartPosition.CenterScreen;
         ClientSize = new Size(900, 728);
         MinimumSize = SizeFromClientSize(ClientSize);
@@ -488,6 +488,12 @@ internal sealed class BasketForm : Form
         else if (vpnBox.Items.Count > 0) vpnBox.SelectedIndex = 0;
         if (saved.Apps != null) apps.AddRange(saved.Apps.Where(a => a != null && !String.IsNullOrWhiteSpace(a.Path)));
         bool repairedCodex = false;
+        foreach (BasketApp app in apps.Where(a => a.Adapter == "Generic" && IsDiscordPath(a.Path)))
+        {
+            app.Adapter = "Discord";
+            app.Name = "Discord";
+            repairedCodex = true;
+        }
         if (apps.Any(a => a.Adapter == "Codex"))
         {
             try
@@ -832,6 +838,7 @@ internal sealed class BasketForm : Form
     {
         if (adapter == "Codex") return "包身份 + 专用代理 · Codex";
         if (adapter == "Browser") return "已适配 · 独立浏览器窗口";
+        if (adapter == "Discord") return "专用代理 · Discord";
         return "通用代理 · 生效情况需实测";
     }
 
@@ -1108,6 +1115,7 @@ internal sealed class BasketForm : Form
         string file = Path.GetFileName(path).ToLowerInvariant();
         string adapter = "Generic";
         if (file == "chatgpt.exe" && path.IndexOf("OpenAI.Codex", StringComparison.OrdinalIgnoreCase) >= 0) { adapter = "Codex"; name = "Codex"; }
+        else if (IsDiscordPath(path)) { adapter = "Discord"; name = "Discord"; }
         else if (new string[] { "chrome.exe", "msedge.exe", "brave.exe", "opera.exe", "vivaldi.exe" }.Contains(file)) adapter = "Browser";
         return new BasketApp { Id = Guid.NewGuid().ToString("N"), Name = name, Path = path, Arguments = arguments ?? "", WorkingDirectory = String.IsNullOrWhiteSpace(workingDirectory) ? Path.GetDirectoryName(path) : workingDirectory, Adapter = adapter, Enabled = true };
     }
@@ -1187,6 +1195,7 @@ internal sealed class BasketForm : Form
             feedback.ForeColor = Color.FromArgb(25, 135, 84);
             feedback.Text = app.Adapter == "Codex"
                 ? "Codex 包身份已验证，已传入专用代理；正在记录实际连接，请正常使用后查看日志。"
+                : app.Adapter == "Discord" ? "Discord 已传入专用代理；请确认主界面加载，语音与视频需单独验证。"
                 : app.Name + " 已按专用方式启动；通用应用是否真正采用代理仍需实测。";
         }
         catch (LaunchReceiptPendingException error)
@@ -1294,6 +1303,9 @@ internal sealed class BasketForm : Form
             string profileDirectory = Path.Combine(browserProfilesDirectory, app.Id);
             Directory.CreateDirectory(profileDirectory);
             args.Add("--user-data-dir=" + Quote(profileDirectory));
+        }
+        if (app.Adapter == "Browser" || app.Adapter == "Discord")
+        {
             args.Add("--proxy-server=" + QuoteIfNeeded(chromiumProxy));
             args.Add("--proxy-bypass-list=localhost;127.0.0.1;[::1]");
             args.Add("--disable-quic");
@@ -1599,6 +1611,22 @@ internal sealed class BasketForm : Form
 
     private string ResolveAppExecutable(BasketApp app, bool refreshCodex)
     {
+        if (app.Adapter == "Discord")
+        {
+            string resolved = FindDiscordExecutable();
+            if (resolved == null)
+            {
+                if (refreshCodex) throw new FileNotFoundException("未找到 Discord 的当前版本，请确认 Discord 已安装。");
+                return app.Path;
+            }
+            if (refreshCodex && !String.Equals(app.Path, resolved, StringComparison.OrdinalIgnoreCase))
+            {
+                app.Path = resolved;
+                app.WorkingDirectory = Path.GetDirectoryName(resolved);
+                SaveState();
+            }
+            return resolved;
+        }
         if (app.Adapter != "Codex") return app.Path;
         if (!refreshCodex && !String.IsNullOrWhiteSpace(currentCodexExecutable) && File.Exists(currentCodexExecutable))
             return currentCodexExecutable;
@@ -1623,6 +1651,16 @@ internal sealed class BasketForm : Form
 
     private bool IsAppRunning(BasketApp app)
     {
+        if (app.Adapter == "Discord")
+        {
+            foreach (Process process in Process.GetProcessesByName("Discord"))
+            {
+                try { if (IsDiscordPath(process.MainModule.FileName)) return true; }
+                catch { }
+                finally { process.Dispose(); }
+            }
+            return false;
+        }
         if (app.Adapter == "Codex")
         {
             foreach (Process process in Process.GetProcessesByName("ChatGPT"))
@@ -1655,6 +1693,43 @@ internal sealed class BasketForm : Form
             }
         }
         catch { return false; }
+    }
+
+    private static bool IsDiscordPath(string path)
+    {
+        if (String.IsNullOrWhiteSpace(path)) return false;
+        string root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Discord");
+        try
+        {
+            string full = Path.GetFullPath(path);
+            string parent = Path.GetDirectoryName(full);
+            return String.Equals(Path.GetFileName(full), "Discord.exe", StringComparison.OrdinalIgnoreCase) &&
+                (String.Equals(parent, root, StringComparison.OrdinalIgnoreCase) ||
+                 (String.Equals(Path.GetDirectoryName(parent), root, StringComparison.OrdinalIgnoreCase) &&
+                  Path.GetFileName(parent).StartsWith("app-", StringComparison.OrdinalIgnoreCase)));
+        }
+        catch { return false; }
+    }
+
+    internal static string FindDiscordExecutableIn(string root)
+    {
+        if (!Directory.Exists(root)) return null;
+        return Directory.GetDirectories(root, "app-*")
+            .Select(d => new { Directory = d, Version = ParseDiscordVersion(Path.GetFileName(d)) })
+            .Where(x => x.Version != null && File.Exists(Path.Combine(x.Directory, "Discord.exe")))
+            .OrderByDescending(x => x.Version)
+            .Select(x => Path.Combine(x.Directory, "Discord.exe")).FirstOrDefault();
+    }
+
+    private static Version ParseDiscordVersion(string name)
+    {
+        Version version;
+        return name.StartsWith("app-", StringComparison.OrdinalIgnoreCase) && Version.TryParse(name.Substring  (4), out version) ? version : null;
+    }
+
+    private static string FindDiscordExecutable()
+    {
+        return FindDiscordExecutableIn(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Discord"));
     }
 
     private static bool IsPathRunning(string path)
