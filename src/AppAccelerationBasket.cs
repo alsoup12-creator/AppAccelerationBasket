@@ -20,9 +20,9 @@ using Microsoft.Win32;
 [assembly: AssemblyCompany("alsoup12-creator")]
 [assembly: AssemblyProduct("应用加速箩筐")]
 [assembly: AssemblyCopyright("Copyright © 2026 alsoup12-creator")]
-[assembly: AssemblyVersion("0.1.3.0")]
-[assembly: AssemblyFileVersion("0.1.3.0")]
-[assembly: AssemblyInformationalVersion("0.1.3")]
+[assembly: AssemblyVersion("0.1.5.0")]
+[assembly: AssemblyFileVersion("0.1.5.0")]
+[assembly: AssemblyInformationalVersion("0.1.5")]
 
 internal static class Program
 {
@@ -144,7 +144,17 @@ internal sealed class BasketForm : Form
     private readonly Label systemValue = new Label();
     private readonly Label proxyValue = new Label();
     private readonly Label countValue = new Label();
+    private readonly Label systemName = new Label();
+    private readonly Label proxyName = new Label();
+    private readonly Label countName = new Label();
     private readonly Label feedback = new Label();
+    private readonly Label subtitle = new Label();
+    private readonly Label basketTitle = new Label();
+    private readonly Label vpnHint = new Label();
+    private readonly Label proxyHint = new Label();
+    private readonly Panel statusPanel = new Panel();
+    private readonly Panel vpnPanel = new Panel();
+    private readonly Panel proxyPanel = new Panel();
     private readonly ListView appList = new ListView();
     private readonly ImageList icons = new ImageList();
     private readonly Button launchButton = new Button();
@@ -152,6 +162,12 @@ internal sealed class BasketForm : Form
     private readonly Button restoreButton = new Button();
     private readonly Button resumeButton = new Button();
     private readonly Button openVpnButton = new Button();
+    private readonly Button testButton = new Button();
+    private readonly Button detectButton = new Button();
+    private readonly Button addVpnButton = new Button();
+    private readonly Button removeButton = new Button();
+    private readonly Button clearButton = new Button();
+    private readonly Button refreshButton = new Button();
     private readonly System.Windows.Forms.Timer refreshTimer = new System.Windows.Forms.Timer();
     private readonly List<BasketApp> apps = new List<BasketApp>();
     private readonly List<VpnProgram> vpnPrograms = new List<VpnProgram>();
@@ -163,6 +179,7 @@ internal sealed class BasketForm : Form
     private bool networkSwitchInProgress;
     private bool launchReceiptPending;
     private bool loading;
+    private bool layoutReady;
 
     [DllImport("wininet.dll", SetLastError = true)]
     private static extern bool InternetSetOption(IntPtr internet, int option, IntPtr buffer, int length);
@@ -182,7 +199,7 @@ internal sealed class BasketForm : Form
         stateFile = Path.Combine(stateDirectory, "basket.json");
         backupFile = Path.Combine(stateDirectory, "windows-proxy-backup.json");
         browserProfilesDirectory = Path.Combine(stateDirectory, "browser-profiles");
-        LogEvent("session.start", "version=0.1.3; proxyUnchanged=true");
+        LogEvent("session.start", "version=0.1.5; proxyUnchanged=true");
         proxySession = session ?? new SystemProxySession(Path.Combine(stateDirectory, "proxy-session-dev8.json"), WinInetProxy.Read, WinInetProxy.WriteFlags, LogEvent);
         try { proxySession.Restore("startup-recovery"); }
         catch (Exception e) { LogEvent("proxy.recovery_error", e.GetType().Name); MessageBox.Show(e.Message, "网络恢复提示"); }
@@ -203,37 +220,41 @@ internal sealed class BasketForm : Form
 
     private void BuildInterface()
     {
-        Text = "应用加速箩筐 v0.1.4 · 一键专用网络";
+        Text = "应用加速箩筐 v0.1.5 · 一键专用网络";
         StartPosition = FormStartPosition.CenterScreen;
         ClientSize = new Size(900, 728);
-        MinimumSize = SizeFromClientSize(ClientSize);
+        MinimumSize = SizeFromClientSize(new Size(900, 640));
         BackColor = Color.FromArgb(246, 248, 251);
         Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Regular, GraphicsUnit.Point);
 
         Label title = MakeLabel("应用加速箩筐", new Point(28, 20), new Size(380, 42));
         title.Font = new Font("Microsoft YaHei UI", 20F, FontStyle.Bold, GraphicsUnit.Point);
         title.ForeColor = Color.FromArgb(24, 31, 42);
+        title.Anchor = AnchorStyles.Top | AnchorStyles.Left;
         Controls.Add(title);
 
-        Label subtitle = MakeLabel("单击选择一个应用，再选择专用或普通启动；运行中的非浏览器应用不会被重复启动", new Point(31, 62), new Size(820, 24));
+        subtitle.Text = "单击选择一个应用，再选择专用或普通启动；运行中的非浏览器应用不会被重复启动";
+        subtitle.Location = new Point(31, 62);
+        subtitle.Size = new Size(820, 24);
         subtitle.ForeColor = Color.FromArgb(93, 103, 116);
+        subtitle.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
         Controls.Add(subtitle);
 
-        Panel statusPanel = new Panel();
         statusPanel.Location = new Point(28, 94);
         statusPanel.Size = new Size(844, 76);
         statusPanel.BackColor = Color.White;
         statusPanel.BorderStyle = BorderStyle.FixedSingle;
+        statusPanel.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
         Controls.Add(statusPanel);
-        AddStatusCell(statusPanel, "系统网络", systemValue, 18, 250);
-        AddStatusCell(statusPanel, "代理线路", proxyValue, 298, 310);
-        AddStatusCell(statusPanel, "当前选择（一次一个）", countValue, 648, 180);
+        AddStatusCell(statusPanel, systemName, "系统网络", systemValue);
+        AddStatusCell(statusPanel, proxyName, "代理线路", proxyValue);
+        AddStatusCell(statusPanel, countName, "当前选择（一次一个）", countValue);
 
-        Panel vpnPanel = new Panel();
         vpnPanel.Location = new Point(28, 184);
         vpnPanel.Size = new Size(844, 64);
         vpnPanel.BackColor = Color.White;
         vpnPanel.BorderStyle = BorderStyle.FixedSingle;
+        vpnPanel.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
         Controls.Add(vpnPanel);
 
         vpnPanel.Controls.Add(MakeLabel("VPN 程序", new Point(16, 12), new Size(70, 24)));
@@ -243,7 +264,6 @@ internal sealed class BasketForm : Form
         vpnBox.SelectedIndexChanged += delegate { if (!loading) { SaveState(); RefreshVpnButton(); } };
         vpnPanel.Controls.Add(vpnBox);
 
-        Button addVpnButton = new Button();
         addVpnButton.Text = "添加其他 VPN…";
         addVpnButton.Location = new Point(386, 7);
         addVpnButton.Size = new Size(142, 30);
@@ -254,19 +274,23 @@ internal sealed class BasketForm : Form
         openVpnButton.Text = "打开所选 VPN";
         openVpnButton.Location = new Point(540, 7);
         openVpnButton.Size = new Size(294, 30);
+        openVpnButton.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
         StyleLightButton(openVpnButton);
         openVpnButton.Click += delegate { OpenSelectedVpn(); };
         vpnPanel.Controls.Add(openVpnButton);
 
-        Label vpnHint = MakeLabel("这里只负责启动或切回 VPN；节点和模式仍在 VPN 自己的界面选择。", new Point(88, 39), new Size(730, 21));
+        vpnHint.Text = "这里只负责启动或切回 VPN；节点和模式仍在 VPN 自己的界面选择。";
+        vpnHint.Location = new Point(88, 39);
+        vpnHint.Size = new Size(730, 21);
         vpnHint.ForeColor = Color.FromArgb(105, 114, 126);
+        vpnHint.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
         vpnPanel.Controls.Add(vpnHint);
 
-        Panel proxyPanel = new Panel();
         proxyPanel.Location = new Point(28, 262);
         proxyPanel.Size = new Size(844, 76);
         proxyPanel.BackColor = Color.White;
         proxyPanel.BorderStyle = BorderStyle.FixedSingle;
+        proxyPanel.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
         Controls.Add(proxyPanel);
 
         proxyPanel.Controls.Add(MakeLabel("代理", new Point(16, 13), new Size(46, 24)));
@@ -296,7 +320,6 @@ internal sealed class BasketForm : Form
         portBox.ValueChanged += delegate { MarkCustom(); RefreshEverything(); };
         proxyPanel.Controls.Add(portBox);
 
-        Button testButton = new Button();
         testButton.Text = "测试线路";
         testButton.Location = new Point(628, 8);
         testButton.Size = new Size(92, 30);
@@ -304,7 +327,6 @@ internal sealed class BasketForm : Form
         testButton.Click += delegate { TestSelectedProxy(true); };
         proxyPanel.Controls.Add(testButton);
 
-        Button detectButton = new Button();
         detectButton.Text = "读取系统代理";
         detectButton.Location = new Point(730, 8);
         detectButton.Size = new Size(104, 30);
@@ -312,12 +334,18 @@ internal sealed class BasketForm : Form
         detectButton.Click += delegate { DetectSystemProxy(); };
         proxyPanel.Controls.Add(detectButton);
 
-        Label proxyHint = MakeLabel("地址示例：127.0.0.1　端口示例：Veee HTTP 15236 / SOCKS5 15235", new Point(62, 45), new Size(650, 22));
+        proxyHint.Text = "地址示例：127.0.0.1　端口示例：Veee HTTP 15236 / SOCKS5 15235";
+        proxyHint.Location = new Point(62, 45);
+        proxyHint.Size = new Size(650, 22);
         proxyHint.ForeColor = Color.FromArgb(105, 114, 126);
+        proxyHint.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
         proxyPanel.Controls.Add(proxyHint);
 
-        Label basketTitle = MakeLabel("本次加速箩筐", new Point(30, 354), new Size(160, 25));
+        basketTitle.Text = "本次加速箩筐";
+        basketTitle.Location = new Point(30, 354);
+        basketTitle.Size = new Size(160, 25);
         basketTitle.Font = new Font("Microsoft YaHei UI", 10F, FontStyle.Bold, GraphicsUnit.Point);
+        basketTitle.Anchor = AnchorStyles.Top | AnchorStyles.Left;
         Controls.Add(basketTitle);
 
         Button addCodexButton = MakeSmallButton("添加 Codex", 174);
@@ -335,16 +363,25 @@ internal sealed class BasketForm : Form
         addRunningButton.Size = new Size(130, 31);
         addRunningButton.Click += delegate { AddFromRunning(); };
         Controls.Add(addRunningButton);
-        Button removeButton = MakeSmallButton("移除", 692);
+        removeButton.Text = "移除";
+        removeButton.Location = new Point(692, 351);
         removeButton.Size = new Size(52, 31);
+        removeButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+        StyleLightButton(removeButton);
         removeButton.Click += delegate { RemoveSelected(); };
         Controls.Add(removeButton);
-        Button clearButton = MakeSmallButton("清空", 754);
+        clearButton.Text = "清空";
+        clearButton.Location = new Point(754, 351);
         clearButton.Size = new Size(52, 31);
+        clearButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+        StyleLightButton(clearButton);
         clearButton.Click += delegate { ClearBasket(); };
         Controls.Add(clearButton);
-        Button refreshButton = MakeSmallButton("刷新", 816);
+        refreshButton.Text = "刷新";
+        refreshButton.Location = new Point(816, 351);
         refreshButton.Size = new Size(52, 31);
+        refreshButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+        StyleLightButton(refreshButton);
         refreshButton.Click += delegate { RefreshEverything(); };
         Controls.Add(refreshButton);
 
@@ -392,7 +429,7 @@ internal sealed class BasketForm : Form
         restoreButton.Text = "恢复系统代理";
         restoreButton.Location = new Point(528, 646);
         restoreButton.Size = new Size(164, 48);
-        restoreButton.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
+        restoreButton.Anchor = AnchorStyles.Bottom | AnchorStyles.Right;
         StyleLightButton(restoreButton);
         restoreButton.Click += delegate { RestoreNetwork(); };
         Controls.Add(restoreButton);
@@ -400,7 +437,7 @@ internal sealed class BasketForm : Form
         resumeButton.Text = "恢复专用加速";
         resumeButton.Location = new Point(702, 646);
         resumeButton.Size = new Size(170, 48);
-        resumeButton.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
+        resumeButton.Anchor = AnchorStyles.Bottom | AnchorStyles.Right;
         StyleLightButton(resumeButton);
         resumeButton.Click += delegate { ResumeDedicatedNetwork(); };
         Controls.Add(resumeButton);
@@ -421,6 +458,54 @@ internal sealed class BasketForm : Form
             catch (Exception e) { MessageBox.Show(this, e.Message, "无法打开日志"); }
         };
         Controls.Add(logsLink);
+
+        Resize += delegate { LayoutResponsiveChrome(); };
+        layoutReady = true;
+        LayoutResponsiveChrome();
+    }
+
+    private void LayoutResponsiveChrome()
+    {
+        if (!layoutReady || statusPanel.Width <= 0) return;
+
+        int pad = 18;
+        int gap = 24;
+        int usable = Math.Max(180, statusPanel.ClientSize.Width - pad * 2 - gap * 2);
+        int leftWidth = Math.Max(160, usable * 30 / 100);
+        int middleWidth = Math.Max(220, usable * 40 / 100);
+        int rightWidth = Math.Max(160, usable - leftWidth - middleWidth);
+        PlaceStatusCell(systemName, systemValue, pad, leftWidth);
+        PlaceStatusCell(proxyName, proxyValue, pad + leftWidth + gap, middleWidth);
+        PlaceStatusCell(countName, countValue, pad + leftWidth + gap + middleWidth + gap, rightWidth);
+
+        int proxyRight = proxyPanel.ClientSize.Width - 10;
+        detectButton.Left = proxyRight - detectButton.Width;
+        testButton.Left = detectButton.Left - 8 - testButton.Width;
+        portBox.Left = testButton.Left - 8 - portBox.Width;
+        hostBox.Width = Math.Max(120, portBox.Left - 8 - hostBox.Left);
+        proxyHint.Width = Math.Max(200, proxyPanel.ClientSize.Width - proxyHint.Left - 16);
+
+        if (appList.Columns.Count >= 4)
+        {
+            int available = appList.ClientSize.Width - 8;
+            if (appList.Items.Count > 12) available -= SystemInformation.VerticalScrollBarWidth;
+            int nameWidth = Math.Max(160, Math.Min(220, available * 22 / 100));
+            int adapterWidth = Math.Max(150, Math.Min(200, available * 20 / 100));
+            int statusWidth = Math.Max(180, Math.Min(280, available * 28 / 100));
+            int pathWidth = Math.Max(160, available - nameWidth - adapterWidth - statusWidth);
+            appList.Columns[0].Width = nameWidth;
+            appList.Columns[1].Width = adapterWidth;
+            appList.Columns[2].Width = statusWidth;
+            appList.Columns[3].Width = pathWidth;
+        }
+    }
+
+    private static void PlaceStatusCell(Label name, Label value, int left, int width)
+    {
+        name.Location = new Point(left, 12);
+        name.Size = new Size(width, 22);
+        value.Location = new Point(left, 37);
+        value.Size = new Size(width, 27);
     }
 
     private static Label MakeLabel(string text, Point location, Size size)
@@ -451,13 +536,15 @@ internal sealed class BasketForm : Form
         button.Cursor = Cursors.Hand;
     }
 
-    private static void AddStatusCell(Control parent, string name, Label value, int left, int width)
+    private static void AddStatusCell(Control parent, Label nameLabel, string name, Label value)
     {
-        Label nameLabel = MakeLabel(name, new Point(left, 12), new Size(width, 22));
+        nameLabel.Text = name;
+        nameLabel.Location = new Point(0, 12);
+        nameLabel.Size = new Size(120, 22);
         nameLabel.ForeColor = Color.FromArgb(105, 114, 126);
         parent.Controls.Add(nameLabel);
-        value.Location = new Point(left, 37);
-        value.Size = new Size(width, 27);
+        value.Location = new Point(0, 37);
+        value.Size = new Size(120, 27);
         value.Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Bold, GraphicsUnit.Point);
         parent.Controls.Add(value);
     }
@@ -1432,9 +1519,9 @@ internal sealed class BasketForm : Form
                 return;
             }
             proxySession.Enter();
-            LogEvent("network.resume", "dedicated=true; noAppLaunch=true");
+            LogEvent("network.resume", "systemDirect=true; appRouting=unverified; noAppLaunch=true");
             feedback.ForeColor = Color.FromArgb(25, 135, 84);
-            feedback.Text = "已恢复专用加速；系统网络直连，已专用启动的应用保持原线路。普通启动的应用需退出后专用启动。";
+            feedback.Text = "系统已切换为直连；正在运行的应用连接尚未验证。";
         }
         catch (Exception error)
         {
@@ -1464,7 +1551,7 @@ internal sealed class BasketForm : Form
                 ? "检测到外部修改，已保留当前系统设置；需要时可点击“恢复专用加速”。"
                 : result == ProxyRestoreResult.NoSession
                     ? "系统原本就是直连，无需恢复代理设置；已退出专用加速模式。"
-                    : "已恢复此前的系统代理设置；完成登录后可点击“恢复专用加速”，无需重启已专用启动的应用。";
+                    : "已恢复此前的系统代理设置；完成登录后可恢复专用模式，应用连接状态需另行确认。";
         }
         catch (Exception error)
         {
