@@ -1,5 +1,7 @@
 using System;
 using System.IO;
+using System.Net;
+using System.Net.Sockets;
 class ProxySessionTests
 {
     static void Check(bool condition, string message) { if (!condition) throw new Exception(message); }
@@ -67,6 +69,37 @@ class ProxySessionTests
             Check(restoreFailure.Active && restoreFailure.IsDedicated(current), "failed restore must retain recovery record and current status");
             session.Restore("cleanup");
             Console.WriteLine("failed restore retains recovery record PASS");
+
+            var listener = new TcpListener(IPAddress.Loopback, 0);
+            listener.Start();
+            try
+            {
+                int port = ((IPEndPoint)listener.LocalEndpoint).Port;
+                string endpoint = "localhost:" + port;
+                current = new ProxySnapshot { Flags = 3, Server = endpoint, Bypass = "", Script = "" };
+                Check(session.Enter(), "enter with local proxy");
+                Check(session.Restore("user-click") == ProxyRestoreResult.Restored && current.Flags == 3,
+                    "a listening local proxy must still be restored");
+
+                Check(session.Enter(), "enter before proxy stops");
+                listener.Stop();
+                int beforeRestore = writes;
+                Check(session.Restore("window-close") == ProxyRestoreResult.LocalProxyUnavailable,
+                    "a stopped local proxy must be skipped on close");
+                Check(current.Flags == 1 && writes == beforeRestore && !session.Active,
+                    "unavailable restore must keep direct mode and consume the stale lease");
+                Check(session.Restore("startup-recovery") == ProxyRestoreResult.NoSession,
+                    "the consumed lease must not be retried on startup");
+                Check(SystemProxySession.LocalProxyUnavailable(3, "http=127.0.0.1:" + port + ";https=" + endpoint),
+                    "per-protocol local proxy must be checked");
+                Check(SystemProxySession.LocalProxyUnavailable(3, "http://[::1]:" + port),
+                    "IPv6 loopback proxy must be checked");
+                Check(!SystemProxySession.LocalProxyUnavailable(5, endpoint), "PAC-only mode must not check a disabled manual proxy");
+                Check(!SystemProxySession.LocalProxyUnavailable(3, "proxy.example.invalid:8080"),
+                    "non-local proxy settings must be restored without a connection check");
+                Console.WriteLine("listening local proxy restores; stopped local proxy keeps direct mode PASS");
+            }
+            finally { listener.Stop(); }
             return 0;
         }
         catch (Exception e) { Console.WriteLine(e); return 1; }

@@ -131,6 +131,38 @@ class BasketUiTests
                 Refresh(form);
                 Console.WriteLine("UI switching lock and pending launch recovery PASS");
 
+                var stopped = new TcpListener(IPAddress.Loopback, 0);
+                stopped.Start();
+                int stoppedPort = ((IPEndPoint)stopped.LocalEndpoint).Port;
+                stopped.Stop();
+                current = new ProxySnapshot { Flags = 3, Server = "localhost:" + stoppedPort, Bypass = "", Script = "" };
+                session.Enter();
+                Refresh(form);
+                Click(restore);
+                Check(current.Flags == 1 && !session.Active && feedback.Text.Contains("端口不可用"),
+                    "restore button must report unavailable local proxy and retain direct mode");
+                Console.WriteLine("UI stopped proxy restore button and feedback PASS");
+
+                string legacy = "{\"ProxyEnable\":{\"Exists\":true,\"Value\":1},\"ProxyServer\":{\"Exists\":true,\"Value\":\"localhost:" + stoppedPort + "\"}}";
+                string legacyPath = Path.Combine(directory, "windows-proxy-backup.json");
+                File.WriteAllText(legacyPath, legacy);
+                Refresh(form);
+                Click(restore);
+                Check(current.Flags == 1 && !File.Exists(legacyPath) && feedback.Text.Contains("端口不可用"),
+                    "legacy backup must not enable a dead local proxy");
+                Console.WriteLine("UI legacy proxy backup protection PASS");
+
+                current.Flags = 3;
+                session.Enter();
+                using (var recoveredForm = new BasketForm(directory, session, (a, d) => { }))
+                {
+                    Field<System.Windows.Forms.Timer>(recoveredForm, "refreshTimer").Stop();
+                    Check(current.Flags == 1 && !session.Active
+                        && Field<Label>(recoveredForm, "feedback").Text.Contains("端口不可用"),
+                        "startup recovery must keep direct mode with a stopped proxy");
+                }
+                Console.WriteLine("UI startup recovery with stopped proxy PASS");
+
                 foreach (string name in new[] { "launchButton", "normalLaunchButton", "restoreButton", "resumeButton" })
                 {
                     var button = Field<Button>(form, name);

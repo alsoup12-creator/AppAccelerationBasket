@@ -20,9 +20,9 @@ using Microsoft.Win32;
 [assembly: AssemblyCompany("alsoup12-creator")]
 [assembly: AssemblyProduct("应用加速箩筐")]
 [assembly: AssemblyCopyright("Copyright © 2026 alsoup12-creator")]
-[assembly: AssemblyVersion("0.1.5.0")]
-[assembly: AssemblyFileVersion("0.1.5.0")]
-[assembly: AssemblyInformationalVersion("0.1.5")]
+[assembly: AssemblyVersion("0.1.6.0")]
+[assembly: AssemblyFileVersion("0.1.6.0")]
+[assembly: AssemblyInformationalVersion("0.1.6")]
 
 internal static class Program
 {
@@ -130,6 +130,7 @@ internal sealed class BasketForm : Form
 {
     private const string CodexAppUserModelId = "OpenAI.Codex_2p2nqsd0c76g0!App";
     private const string ProxyRegistryPath = @"Software\Microsoft\Windows\CurrentVersion\Internet Settings";
+    private const string LocalProxyUnavailableMessage = "原来的本机代理端口不可用，已保留当前系统网络。";
     private readonly string stateDirectory;
     private readonly Action<string, string> eventLogger;
     private readonly string stateFile;
@@ -199,11 +200,13 @@ internal sealed class BasketForm : Form
         stateFile = Path.Combine(stateDirectory, "basket.json");
         backupFile = Path.Combine(stateDirectory, "windows-proxy-backup.json");
         browserProfilesDirectory = Path.Combine(stateDirectory, "browser-profiles");
-        LogEvent("session.start", "version=0.1.5; proxyUnchanged=true");
+        LogEvent("session.start", "version=0.1.6; proxyUnchanged=true");
         proxySession = session ?? new SystemProxySession(Path.Combine(stateDirectory, "proxy-session-dev8.json"), WinInetProxy.Read, WinInetProxy.WriteFlags, LogEvent);
-        try { proxySession.Restore("startup-recovery"); }
+        ProxyRestoreResult startupRestore = ProxyRestoreResult.NoSession;
+        try { startupRestore = proxySession.Restore("startup-recovery"); }
         catch (Exception e) { LogEvent("proxy.recovery_error", e.GetType().Name); MessageBox.Show(e.Message, "网络恢复提示"); }
         BuildInterface();
+        if (startupRestore == ProxyRestoreResult.LocalProxyUnavailable) feedback.Text = LocalProxyUnavailableMessage;
         FormClosing += delegate(object sender, FormClosingEventArgs e) {
             if (launchInProgress || networkSwitchInProgress) { e.Cancel = true; return; }
             try { proxySession.Restore("window-close"); }
@@ -220,7 +223,7 @@ internal sealed class BasketForm : Form
 
     private void BuildInterface()
     {
-        Text = "应用加速箩筐 v0.1.5 · 一键专用网络";
+        Text = "应用加速箩筐 v0.1.6 · 一键专用网络";
         StartPosition = FormStartPosition.CenterScreen;
         ClientSize = new Size(900, 728);
         MinimumSize = SizeFromClientSize(new Size(900, 640));
@@ -1337,13 +1340,15 @@ internal sealed class BasketForm : Form
         RefreshEverything();
         try
         {
-            proxySession.Restore("normal-launch");
+            ProxyRestoreResult restore = proxySession.Restore("normal-launch");
             LogEvent("launch.request", app.Adapter + "; mode=Normal");
             launchedProcessIds[app.Id] = LaunchAppNormally(app);
             launchedModes[app.Id] = "Normal";
             LogEvent("launch.accepted", "pid=" + launchedProcessIds[app.Id] + "; appReady=unverified; routing=unverified");
             feedback.ForeColor = Color.FromArgb(39, 48, 61);
-            feedback.Text = app.Name + " 启动请求已提交；跟随系统网络，未验证应用就绪或专用分流。";
+            feedback.Text = restore == ProxyRestoreResult.LocalProxyUnavailable
+                ? LocalProxyUnavailableMessage + " 已请求普通启动 " + app.Name + "。"
+                : app.Name + " 启动请求已提交；跟随系统网络，未验证应用就绪或专用分流。";
         }
         catch (Exception error)
         {
@@ -1542,12 +1547,11 @@ internal sealed class BasketForm : Form
         {
             ProxyRestoreResult result = proxySession.Restore("user-click");
             if (result == ProxyRestoreResult.NoSession && File.Exists(backupFile))
-            {
-                RestoreSystemProxy(false);
-                result = ProxyRestoreResult.Restored;
-            }
+                result = RestoreLegacySystemProxy();
             feedback.ForeColor = Color.FromArgb(39, 48, 61);
-            feedback.Text = result == ProxyRestoreResult.ExternalChangePreserved
+            feedback.Text = result == ProxyRestoreResult.LocalProxyUnavailable
+                ? LocalProxyUnavailableMessage
+                : result == ProxyRestoreResult.ExternalChangePreserved
                 ? "检测到外部修改，已保留当前系统设置；需要时可点击“恢复专用加速”。"
                 : result == ProxyRestoreResult.NoSession
                     ? "系统原本就是直连，无需恢复代理设置；已退出专用加速模式。"
@@ -1563,14 +1567,19 @@ internal sealed class BasketForm : Form
         finally { networkSwitchInProgress = false; RefreshEverything(); }
     }
 
-    private void RestoreSystemProxy(bool showMessage)
+    private ProxyRestoreResult RestoreLegacySystemProxy()
     {
-        if (!File.Exists(backupFile))
-        {
-            if (showMessage) MessageBox.Show(this, "本工具没有保存过系统代理，因此没有修改任何设置。", "没有可恢复的备份", MessageBoxButtons.OK, MessageBoxIcon.Information);
-            return;
-        }
+        if (!File.Exists(backupFile)) return ProxyRestoreResult.NoSession;
         Dictionary<string, object> root = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(File.ReadAllText(backupFile, Encoding.UTF8));
+        var enabled = (Dictionary<string, object>)root["ProxyEnable"];
+        var server = (Dictionary<string, object>)root["ProxyServer"];
+        if (Convert.ToBoolean(enabled["Exists"]) && Convert.ToInt32(enabled["Value"]) != 0
+            && Convert.ToBoolean(server["Exists"]) && SystemProxySession.LocalProxyUnavailable(2, Convert.ToString(server["Value"])))
+        {
+            File.Delete(backupFile);
+            LogEvent("proxy.restore_unavailable", "legacyBackup=true; reason=user-click");
+            return ProxyRestoreResult.LocalProxyUnavailable;
+        }
         using (RegistryKey key = Registry.CurrentUser.OpenSubKey(ProxyRegistryPath, true))
         {
             if (key == null) throw new InvalidOperationException("无法修改 Windows 代理设置。");
@@ -1583,7 +1592,7 @@ internal sealed class BasketForm : Form
         }
         File.Delete(backupFile); RefreshInternetSettings(); RefreshEverything();
         LogEvent("proxy.restore", "explicitUserAction=true");
-        if (showMessage) MessageBox.Show(this, "已恢复启动箩筐前保存的系统代理。\n\n已经启动的应用会保持原来的代理路线直到退出。", "恢复完成", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        return ProxyRestoreResult.Restored;
     }
 
     private void DetectSystemProxy()

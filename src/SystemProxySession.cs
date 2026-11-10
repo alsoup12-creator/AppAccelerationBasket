@@ -1,6 +1,8 @@
 using System;
 using System.ComponentModel;
 using System.IO;
+using System.Net;
+using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using System.Web.Script.Serialization;
 
@@ -10,7 +12,7 @@ internal sealed class ProxySnapshot {
  public bool Same(ProxySnapshot other){return other!=null&&Flags==other.Flags&&Server==other.Server&&Bypass==other.Bypass&&Script==other.Script;}
 }
 internal sealed class ProxyLease { public ProxySnapshot Before; public ProxySnapshot Applied; }
-internal enum ProxyRestoreResult { NoSession, Restored, AlreadyRestored, ExternalChangePreserved }
+internal enum ProxyRestoreResult { NoSession, Restored, AlreadyRestored, ExternalChangePreserved, LocalProxyUnavailable }
 internal sealed class SystemProxySession {
  readonly string file; readonly Func<ProxySnapshot> read; readonly Action<int> write; readonly Action<string,string> log;
  bool directRequested;
@@ -33,7 +35,67 @@ internal sealed class SystemProxySession {
   if(!Active)return ProxyRestoreResult.NoSession;var lease=Load();var current=read();
   if(current.Same(lease.Before)){File.Delete(file);log("proxy.restore","alreadyRestored=true; reason="+reason);return ProxyRestoreResult.AlreadyRestored;}
   if(!current.Same(lease.Applied)){File.Delete(file);log("proxy.restore_skipped","externalChange=true; currentFlags="+current.Flags+"; reason="+reason);return ProxyRestoreResult.ExternalChangePreserved;}
+  if (LocalProxyUnavailable(lease.Before.Flags, lease.Before.Server))
+  {
+      File.Delete(file);
+      log("proxy.restore_unavailable", "keptDirect=true; reason=" + reason);
+      return ProxyRestoreResult.LocalProxyUnavailable;
+  }
+  if (!read().Same(lease.Applied))
+  {
+      File.Delete(file);
+      log("proxy.restore_skipped", "externalChange=true; reason=" + reason);
+      return ProxyRestoreResult.ExternalChangePreserved;
+  }
   write(lease.Before.Flags);if(!read().Same(lease.Before))throw new InvalidOperationException("恢复网络设置后核对不一致；恢复记录已保留。");File.Delete(file);log("proxy.restore","flags="+lease.Before.Flags+"; reason="+reason);return ProxyRestoreResult.Restored;
+ }
+
+ internal static bool LocalProxyUnavailable(int flags, string server)
+ {
+     const int manualProxy = 2;
+     if ((flags & manualProxy) == 0 || String.IsNullOrWhiteSpace(server)) return false;
+
+     foreach (string entry in server.Split(';'))
+     {
+         string endpoint = entry.Substring(entry.IndexOf('=') + 1).Trim();
+         if (endpoint.Length == 0) continue;
+
+         Uri uri;
+         string address = endpoint.Contains("://") ? endpoint : "http://" + endpoint;
+         if (!Uri.TryCreate(address, UriKind.Absolute, out uri) || uri.Port <= 0) continue;
+
+         string host = uri.DnsSafeHost.TrimEnd('.');
+         if (String.Equals(host, "localhost", StringComparison.OrdinalIgnoreCase))
+         {
+             if (!CanConnect(IPAddress.Loopback, uri.Port) && !CanConnect(IPAddress.IPv6Loopback, uri.Port))
+                 return true;
+         }
+         else
+         {
+             IPAddress ip;
+             if (IPAddress.TryParse(host, out ip) && IPAddress.IsLoopback(ip) && !CanConnect(ip, uri.Port))
+                 return true;
+         }
+     }
+     return false;
+ }
+
+ private static bool CanConnect(IPAddress address, int port)
+ {
+     try
+     {
+         using (var client = new TcpClient(address.AddressFamily))
+         {
+             IAsyncResult connection = client.BeginConnect(address, port, null, null);
+             using (var completed = connection.AsyncWaitHandle)
+             {
+                 if (!completed.WaitOne(400)) return false;
+                 client.EndConnect(connection);
+                 return true;
+             }
+         }
+     }
+     catch (SocketException) { return false; }
  }
 }
 internal static class WinInetProxy {
